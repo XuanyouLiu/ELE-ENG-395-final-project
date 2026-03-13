@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+
+# Generated caches
+.cache/
+.mplconfig/
+
+# Keep generated results/figures tracked for reproducibility
