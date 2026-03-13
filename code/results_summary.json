@@ -2,7 +2,7 @@
   "seed": 395,
   "device": "cpu",
   "mode": "full",
-  "timestamp": "2026-03-13 18:23:18",
+  "timestamp": "2026-03-13 18:47:29",
   "vanderpol": {
     "dt": 0.1,
     "time_horizon": [
@@ -14,34 +14,41 @@
       "base_2x32": {
         "z_rmse": 0.0532559424285753,
         "z_mae": 0.03458628411443473,
-        "train_seconds": 0.43452978134155273
+        "train_seconds": 0.41,
+        "param_count": 1153
       },
       "deep_6x32": {
         "z_rmse": 0.8946332760071504,
         "z_mae": 0.5296025354101896,
-        "train_seconds": 0.9069278240203857
+        "train_seconds": 0.86,
+        "param_count": 5377
       },
       "wide_2x128": {
         "z_rmse": 0.1038279187921066,
         "z_mae": 0.07417788012818531,
-        "train_seconds": 0.5885732173919678
+        "train_seconds": 0.58,
+        "param_count": 16897
       }
     },
     "model_metrics": {
       "baseline_mlp": {
         "z_rmse": 0.0532559424285753,
         "v_rmse": 0.23917492338161347,
-        "train_seconds": 0.43452978134155273
+        "train_seconds": 0.41,
+        "param_count": 1153
       },
       "neural_ode": {
-        "z_rmse": 0.10123141356293017,
-        "v_rmse": 0.30501866654639487,
-        "train_seconds": 23.54562520980835
+        "z_rmse": 0.1880598488831768,
+        "v_rmse": 0.3825490460359823,
+        "z_rmse_rk4": 0.6296193926213216,
+        "v_rmse_rk4": 0.8818001623818547,
+        "train_seconds": 23.71,
+        "param_count": 4482
       }
     }
   },
   "pendulum": {
-    "dt": 0.02506265664160401,
+    "dt": 0.025063,
     "num_steps": 400,
     "num_trajectories": 80,
     "noise_std": 0.02,
@@ -52,27 +59,32 @@
     },
     "model_metrics": {
       "baseline_mlp": {
-        "theta_rmse": 0.6350792271951906,
-        "omega_rmse": 1.9293555528429804,
-        "theta_mae": 0.4694153421281849,
-        "omega_mae": 1.4009648148919662,
-        "train_seconds": 1.812269687652588
+        "theta_rmse": 0.49595317667384464,
+        "omega_rmse": 1.5110726399574235,
+        "theta_mae": 0.36176312465153454,
+        "omega_mae": 1.0884454801690462,
+        "train_seconds": 2.72,
+        "param_count": 4482
       },
       "neural_ode": {
-        "theta_rmse": 0.38188692486274317,
-        "omega_rmse": 1.153379950086124,
-        "theta_mae": 0.3109506067854576,
-        "omega_mae": 0.943794934660135,
-        "train_seconds": 40.33041501045227
+        "theta_rmse": 0.18753170468256386,
+        "omega_rmse": 0.4990338503727534,
+        "theta_mae": 0.14455853190234605,
+        "omega_mae": 0.34656306294968886,
+        "train_seconds": 52.84,
+        "param_count": 4482,
+        "energy_drift_std": 0.552979
       },
       "structured_lnn": {
-        "theta_rmse": 0.006651015141508655,
-        "omega_rmse": 0.020381266042012486,
-        "theta_mae": 0.004647813198721019,
-        "omega_mae": 0.014404544383189766,
-        "train_seconds": 9.336086988449097
+        "theta_rmse": 0.005617230702692355,
+        "omega_rmse": 0.016582148591917572,
+        "theta_mae": 0.003775653685814042,
+        "omega_mae": 0.011430978872149581,
+        "train_seconds": 12.14,
+        "param_count": 8513,
+        "energy_drift_std": 0.00218
       }
     },
-    "best_val_lnn_mse": 7.184858259279281e-05
+    "best_val_lnn_mse": 0.001197411329485476
   }
 }

@@ -1,146 +1,73 @@
 """
-Refined experiment runner for ELE_ENG 395 final project.
+Experiment runner for ELE_ENG 395 final project.
 
-Features:
-- Configurable quick/full modes via CLI
-- Reproducible seeds
-- Van der Pol: MLP capacity study + Neural ODE + vector-field visualization
-- Pendulum: baseline one-step model, Neural ODE, structured Lagrangian NN
-- Exports figures and results JSON for report generation
+Compares data-driven and physics-structured models on two nonlinear ODE systems:
+  1. Van der Pol oscillator  (MLP capacity study + Neural ODE)
+  2. Simple pendulum         (baseline MLP + Neural ODE + structured LNN)
+
+New in this version:
+  - Modular imports from code.models, code.solvers, code.plotting
+  - Training loss curves logged and plotted
+  - Parameter count per model
+  - Energy conservation analysis for pendulum
+  - Learned potential vs true potential comparison
+  - RK4 evaluation rollout for Neural ODE (fairer comparison)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-
 CODE_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(CODE_ROOT))
+
+from models import (
+    TimeMLP,
+    StateMLP,
+    ODEFunc,
+    PotentialMLP,
+    count_parameters,
+    predict_accel_lnn,
+)
+from solvers import (
+    rmse,
+    mae,
+    rollout_rk4,
+    rollout_euler_single,
+    rollout_euler_batch,
+    rollout_rk4_torch,
+    pendulum_energy,
+)
+from plotting import (
+    plot_vdp_capacity,
+    plot_vdp_model_comparison,
+    plot_vdp_vector_field,
+    plot_vdp_loss_curves,
+    plot_pendulum_model_comparison,
+    plot_pendulum_energy,
+    plot_learned_potential,
+    plot_pendulum_loss_curves,
+    plot_overall_bar,
+)
+
+
 FIG_DIR = CODE_ROOT / "figures"
 RESULTS_PATH = CODE_ROOT / "results_summary.json"
-
-
-def rmse(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.sqrt(np.mean((a - b) ** 2)))
-
-
-def mae(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.mean(np.abs(a - b)))
 
 
 def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-
-def rk4_step_autonomous(rhs: Callable[[np.ndarray], np.ndarray], y: np.ndarray, dt: float) -> np.ndarray:
-    k1 = rhs(y)
-    k2 = rhs(y + 0.5 * dt * k1)
-    k3 = rhs(y + 0.5 * dt * k2)
-    k4 = rhs(y + dt * k3)
-    return y + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-
-
-def rollout_rk4(rhs: Callable[[np.ndarray], np.ndarray], y0: np.ndarray, steps: int, dt: float) -> np.ndarray:
-    out = np.zeros((steps, len(y0)), dtype=np.float64)
-    out[0] = y0
-    for i in range(1, steps):
-        out[i] = rk4_step_autonomous(rhs, out[i - 1], dt)
-    return out
-
-
-class TimeMLP(nn.Module):
-    def __init__(self, output_dim: int = 1, hidden: int = 32, layers: int = 2):
-        super().__init__()
-        modules = [nn.Linear(1, hidden), nn.Tanh()]
-        for _ in range(layers - 1):
-            modules += [nn.Linear(hidden, hidden), nn.Tanh()]
-        modules.append(nn.Linear(hidden, output_dim))
-        self.net = nn.Sequential(*modules)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class StateMLP(nn.Module):
-    def __init__(self, hidden: int = 64, layers: int = 2):
-        super().__init__()
-        modules = [nn.Linear(2, hidden), nn.Tanh()]
-        for _ in range(layers - 1):
-            modules += [nn.Linear(hidden, hidden), nn.Tanh()]
-        modules.append(nn.Linear(hidden, 2))
-        self.net = nn.Sequential(*modules)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class ODEFunc(nn.Module):
-    def __init__(self, hidden: int = 64):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(2, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, 2),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-class PotentialMLP(nn.Module):
-    def __init__(self, hidden: int = 64, layers: int = 3):
-        super().__init__()
-        modules = [nn.Linear(1, hidden), nn.Tanh()]
-        for _ in range(layers - 1):
-            modules += [nn.Linear(hidden, hidden), nn.Tanh()]
-        modules.append(nn.Linear(hidden, 1))
-        self.net = nn.Sequential(*modules)
-
-    def forward(self, theta: torch.Tensor) -> torch.Tensor:
-        return self.net(theta)
-
-
-def rollout_euler_single(func: nn.Module, x0: torch.Tensor, steps: int, dt: float) -> torch.Tensor:
-    xs = [x0]
-    x = x0
-    for _ in range(steps - 1):
-        x = x + dt * func(x)
-        xs.append(x)
-    return torch.stack(xs, dim=0)
-
-
-def rollout_euler_batch(func: nn.Module, x0_batch: torch.Tensor, steps: int, dt: float) -> torch.Tensor:
-    xs = [x0_batch]
-    x = x0_batch
-    for _ in range(steps - 1):
-        x = x + dt * func(x)
-        xs.append(x)
-    return torch.stack(xs, dim=0)
-
-
-def predict_accel_lnn(model: nn.Module, theta_batch: torch.Tensor, create_graph: bool = True) -> torch.Tensor:
-    theta_batch = theta_batch.requires_grad_(True)
-    potential = model(theta_batch)
-    grad = torch.autograd.grad(
-        outputs=potential,
-        inputs=theta_batch,
-        grad_outputs=torch.ones_like(potential),
-        create_graph=create_graph,
-    )[0]
-    return -grad
 
 
 @dataclass
@@ -155,8 +82,21 @@ class RunConfig:
         return self.mode == "quick"
 
 
-def run_vanderpol_experiments(results: dict, config: RunConfig, device: torch.device) -> None:
-    print("\n[Van der Pol] Running experiments...")
+def _log_epoch(epoch: int, total: int, loss: float, interval: int = 200) -> None:
+    if (epoch + 1) % interval == 0 or epoch == 0:
+        print(f"    epoch {epoch+1:>5d}/{total}  loss={loss:.6f}")
+
+
+# -----------------------------------------------------------------------
+# Van der Pol experiments
+# -----------------------------------------------------------------------
+
+def run_vanderpol_experiments(
+    results: dict, config: RunConfig, device: torch.device,
+) -> None:
+    print("\n" + "=" * 60)
+    print("[Van der Pol] Running experiments")
+    print("=" * 60)
 
     mu = 1.0
     dt = 0.1
@@ -165,7 +105,7 @@ def run_vanderpol_experiments(results: dict, config: RunConfig, device: torch.de
     y0 = np.array([2.0, 0.0], dtype=np.float64)
 
     cap_epochs = 400 if config.quick else 1500
-    ode_epochs = 500 if config.quick else 1800
+    ode_epochs = 500 if config.quick else 2000
 
     def rhs(state: np.ndarray) -> np.ndarray:
         z, v = state
@@ -190,17 +130,24 @@ def run_vanderpol_experiments(results: dict, config: RunConfig, device: torch.de
 
     cap_preds: dict[str, np.ndarray] = {}
     cap_metrics: dict[str, dict] = {}
+    loss_histories: dict[str, list[float]] = {}
 
     for name, cfg in cap_cfgs.items():
         model = TimeMLP(output_dim=1, hidden=cfg["hidden"], layers=cfg["layers"]).to(device)
+        n_params = count_parameters(model)
+        print(f"\n  Training {name} ({n_params} params, {cap_epochs} epochs)")
         opt = optim.Adam(model.parameters(), lr=0.01)
+        losses: list[float] = []
         start = time.time()
-        for _ in range(cap_epochs):
+        for ep in range(cap_epochs):
             opt.zero_grad()
             pred = model(t_t)
             loss = nn.functional.mse_loss(pred, z_noisy_t)
             loss.backward()
             opt.step()
+            lv = loss.item()
+            losses.append(lv)
+            _log_epoch(ep, cap_epochs, lv)
         elapsed = time.time() - start
 
         with torch.no_grad():
@@ -209,25 +156,42 @@ def run_vanderpol_experiments(results: dict, config: RunConfig, device: torch.de
         cap_metrics[name] = {
             "z_rmse": rmse(pred_np, z_true),
             "z_mae": mae(pred_np, z_true),
-            "train_seconds": elapsed,
+            "train_seconds": round(elapsed, 2),
+            "param_count": n_params,
         }
+        loss_histories[name] = losses
+        print(f"    -> z_rmse={cap_metrics[name]['z_rmse']:.4f}  time={elapsed:.1f}s")
 
-    state_noisy_t = torch.tensor(np.column_stack((z_noisy, v_noisy)), dtype=torch.float32, device=device)
-    ode_func = ODEFunc(hidden=64).to(device)
+    # Neural ODE
+    state_noisy_t = torch.tensor(
+        np.column_stack((z_noisy, v_noisy)), dtype=torch.float32, device=device,
+    )
+    ode_func = ODEFunc(hidden=64, layers=2).to(device)
+    n_params_ode = count_parameters(ode_func)
+    print(f"\n  Training Neural ODE ({n_params_ode} params, {ode_epochs} epochs)")
     opt_ode = optim.Adam(ode_func.parameters(), lr=0.005)
     x0_t = state_noisy_t[0]
+    ode_losses: list[float] = []
 
     start = time.time()
-    for _ in range(ode_epochs):
+    for ep in range(ode_epochs):
         opt_ode.zero_grad()
         pred_traj = rollout_euler_single(ode_func, x0_t, len(t), dt)
         loss = nn.functional.mse_loss(pred_traj, state_noisy_t)
         loss.backward()
         opt_ode.step()
+        lv = loss.item()
+        ode_losses.append(lv)
+        _log_epoch(ep, ode_epochs, lv)
     ode_seconds = time.time() - start
+    loss_histories["Neural ODE"] = ode_losses
 
     with torch.no_grad():
-        ode_pred = rollout_euler_single(ode_func, x0_t, len(t), dt).cpu().numpy()
+        ode_pred_euler = rollout_euler_single(ode_func, x0_t, len(t), dt).cpu().numpy()
+        ode_pred_rk4 = rollout_rk4_torch(ode_func, x0_t, len(t), dt).cpu().numpy()
+
+    print(f"    -> z_rmse(euler)={rmse(ode_pred_euler[:, 0], z_true):.4f}  "
+          f"z_rmse(rk4)={rmse(ode_pred_rk4[:, 0], z_true):.4f}  time={ode_seconds:.1f}s")
 
     results["vanderpol"] = {
         "dt": dt,
@@ -239,11 +203,15 @@ def run_vanderpol_experiments(results: dict, config: RunConfig, device: torch.de
                 "z_rmse": cap_metrics["base_2x32"]["z_rmse"],
                 "v_rmse": rmse(np.gradient(cap_preds["base_2x32"], dt), v_true),
                 "train_seconds": cap_metrics["base_2x32"]["train_seconds"],
+                "param_count": cap_metrics["base_2x32"]["param_count"],
             },
             "neural_ode": {
-                "z_rmse": rmse(ode_pred[:, 0], z_true),
-                "v_rmse": rmse(ode_pred[:, 1], v_true),
-                "train_seconds": ode_seconds,
+                "z_rmse": rmse(ode_pred_euler[:, 0], z_true),
+                "v_rmse": rmse(ode_pred_euler[:, 1], v_true),
+                "z_rmse_rk4": rmse(ode_pred_rk4[:, 0], z_true),
+                "v_rmse_rk4": rmse(ode_pred_rk4[:, 1], v_true),
+                "train_seconds": round(ode_seconds, 2),
+                "param_count": n_params_ode,
             },
         },
     }
@@ -251,82 +219,27 @@ def run_vanderpol_experiments(results: dict, config: RunConfig, device: torch.de
     if not config.save_plots:
         return
 
-    plt.figure(figsize=(11, 4.5))
-    plt.plot(t, z_true, "k--", linewidth=2.0, label="True z(t)")
-    plt.scatter(t, z_noisy, s=8, c="gray", alpha=0.35, label="Noisy observations")
-    plt.plot(t, cap_preds["base_2x32"], label="Base MLP (2x32)")
-    plt.plot(t, cap_preds["deep_6x32"], label="Deep MLP (6x32)")
-    plt.plot(t, cap_preds["wide_2x128"], label="Wide MLP (2x128)")
-    plt.xlabel("t")
-    plt.ylabel("z")
-    plt.title("Van der Pol capacity study")
-    plt.grid(True, alpha=0.25)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(FIG_DIR / "vdp_capacity.png", dpi=180)
-    plt.close()
-
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    axes[0].plot(t, z_true, "k--", linewidth=2.0, label="True")
-    axes[0].plot(t, cap_preds["base_2x32"], label="Baseline MLP")
-    axes[0].plot(t, ode_pred[:, 0], label="Neural ODE")
-    axes[0].scatter(t, z_noisy, s=8, c="gray", alpha=0.3)
-    axes[0].set_title("Time series")
-    axes[0].set_xlabel("t")
-    axes[0].set_ylabel("z")
-    axes[0].grid(True, alpha=0.25)
-    axes[0].legend()
-
-    axes[1].plot(z_true, v_true, "k--", linewidth=2.0, label="True")
-    axes[1].plot(ode_pred[:, 0], ode_pred[:, 1], label="Neural ODE")
-    axes[1].set_title("Phase space")
-    axes[1].set_xlabel("z")
-    axes[1].set_ylabel("v")
-    axes[1].grid(True, alpha=0.25)
-    axes[1].axis("equal")
-    axes[1].legend()
-    plt.tight_layout()
-    plt.savefig(FIG_DIR / "vdp_model_comparison.png", dpi=180)
-    plt.close(fig)
-
-    z_grid = np.linspace(-3.0, 3.0, 20)
-    v_grid = np.linspace(-3.0, 3.0, 20)
-    Z, V = np.meshgrid(z_grid, v_grid)
-    grid_t = torch.tensor(np.column_stack((Z.ravel(), V.ravel())), dtype=torch.float32, device=device)
-
-    with torch.no_grad():
-        vec = ode_func(grid_t).cpu().numpy()
-    U = vec[:, 0].reshape(Z.shape)
-    W = vec[:, 1].reshape(Z.shape)
-
-    plt.figure(figsize=(7, 7))
-    plt.quiver(Z, V, U, W, color="gray", alpha=0.65)
-    sampled_ics = np.random.multivariate_normal(mean=y0, cov=[[0.1, 0.0], [0.0, 0.1]], size=3)
-    for i, ic in enumerate(sampled_ics):
-        ic_t = torch.tensor(ic, dtype=torch.float32, device=device)
-        with torch.no_grad():
-            traj_i = rollout_euler_single(ode_func, ic_t, len(t), dt).cpu().numpy()
-        plt.plot(traj_i[:, 0], traj_i[:, 1], linewidth=2.0, label=f"Sampled IC {i+1}")
-        plt.scatter(ic[0], ic[1], s=32)
-
-    plt.title("Van der Pol learned vector field and nearby trajectories")
-    plt.xlabel("z")
-    plt.ylabel("v")
-    plt.grid(True, alpha=0.25)
-    plt.axis("equal")
-    plt.xlim(-3.0, 3.0)
-    plt.ylim(-3.0, 3.0)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(FIG_DIR / "vdp_vector_field.png", dpi=180)
-    plt.close()
+    plot_vdp_capacity(t, z_true, z_noisy, cap_preds, FIG_DIR)
+    plot_vdp_model_comparison(t, z_true, v_true, z_noisy, cap_preds["base_2x32"],
+                              ode_pred_euler, ode_pred_rk4, FIG_DIR)
+    plot_vdp_vector_field(ode_func, y0, len(t), dt, device, FIG_DIR)
+    plot_vdp_loss_curves(loss_histories, FIG_DIR)
 
 
-def run_pendulum_experiments(results: dict, config: RunConfig, device: torch.device) -> None:
-    print("\n[Pendulum] Running experiments...")
+# -----------------------------------------------------------------------
+# Pendulum experiments
+# -----------------------------------------------------------------------
+
+def run_pendulum_experiments(
+    results: dict, config: RunConfig, device: torch.device,
+) -> None:
+    print("\n" + "=" * 60)
+    print("[Pendulum] Running experiments")
+    print("=" * 60)
 
     g = 9.81
     ell = 1.0
+    g_over_l = g / ell
     t_final = 10.0
     num_steps = 250 if config.quick else 400
     num_traj = 30 if config.quick else 80
@@ -334,13 +247,13 @@ def run_pendulum_experiments(results: dict, config: RunConfig, device: torch.dev
     dt = t_final / (num_steps - 1)
     time_grid = np.linspace(0.0, t_final, num_steps)
 
-    baseline_epochs = 200 if config.quick else 600
-    ode_epochs = 250 if config.quick else 700
-    lnn_epochs = 350 if config.quick else 1200
+    baseline_epochs = 200 if config.quick else 800
+    ode_epochs = 250 if config.quick else 900
+    lnn_epochs = 350 if config.quick else 1500
 
     def rhs(state: np.ndarray) -> np.ndarray:
         theta, omega = state
-        return np.array([omega, -(g / ell) * np.sin(theta)], dtype=np.float64)
+        return np.array([omega, -g_over_l * np.sin(theta)], dtype=np.float64)
 
     theta0 = np.deg2rad(np.random.uniform(-80.0, 80.0, size=num_traj))
     omega0 = np.deg2rad(np.random.uniform(-100.0, 100.0, size=num_traj))
@@ -362,18 +275,30 @@ def run_pendulum_experiments(results: dict, config: RunConfig, device: torch.dev
     idx_val = perm[n_train:n_train + n_val]
     idx_test = perm[n_train + n_val:]
 
-    x_train_t = torch.tensor(noisy_states[idx_train, :-1, :].reshape(-1, 2), dtype=torch.float32, device=device)
-    y_train_t = torch.tensor(noisy_states[idx_train, 1:, :].reshape(-1, 2), dtype=torch.float32, device=device)
+    # --- Baseline MLP ---
+    x_train_t = torch.tensor(
+        noisy_states[idx_train, :-1, :].reshape(-1, 2), dtype=torch.float32, device=device,
+    )
+    y_train_t = torch.tensor(
+        noisy_states[idx_train, 1:, :].reshape(-1, 2), dtype=torch.float32, device=device,
+    )
 
     baseline = StateMLP(hidden=64, layers=2).to(device)
+    n_params_base = count_parameters(baseline)
+    print(f"\n  Training baseline MLP ({n_params_base} params, {baseline_epochs} epochs)")
     opt_base = optim.Adam(baseline.parameters(), lr=1e-3)
+    base_losses: list[float] = []
+
     start = time.time()
-    for _ in range(baseline_epochs):
+    for ep in range(baseline_epochs):
         opt_base.zero_grad()
         pred = baseline(x_train_t)
         loss = nn.functional.mse_loss(pred, y_train_t)
         loss.backward()
         opt_base.step()
+        lv = loss.item()
+        base_losses.append(lv)
+        _log_epoch(ep, baseline_epochs, lv)
     base_seconds = time.time() - start
 
     def rollout_baseline(model: nn.Module, x0: np.ndarray, steps: int) -> np.ndarray:
@@ -392,18 +317,25 @@ def run_pendulum_experiments(results: dict, config: RunConfig, device: torch.dev
     for j, tidx in enumerate(idx_test):
         base_pred_test[j] = rollout_baseline(baseline, true_states[tidx, 0], num_steps)
 
-    ode_func = ODEFunc(hidden=64).to(device)
+    # --- Neural ODE ---
+    ode_func = ODEFunc(hidden=64, layers=2).to(device)
+    n_params_ode = count_parameters(ode_func)
+    print(f"\n  Training Neural ODE ({n_params_ode} params, {ode_epochs} epochs)")
     opt_ode = optim.Adam(ode_func.parameters(), lr=2e-3)
     target_train = torch.tensor(noisy_states[idx_train], dtype=torch.float32, device=device).transpose(0, 1)
     x0_train = target_train[0]
+    ode_losses: list[float] = []
 
     start = time.time()
-    for _ in range(ode_epochs):
+    for ep in range(ode_epochs):
         opt_ode.zero_grad()
         pred = rollout_euler_batch(ode_func, x0_train, num_steps, dt)
         loss = nn.functional.mse_loss(pred, target_train)
         loss.backward()
         opt_ode.step()
+        lv = loss.item()
+        ode_losses.append(lv)
+        _log_epoch(ep, ode_epochs, lv)
     ode_seconds = time.time() - start
 
     ode_pred_test = np.zeros_like(true_test)
@@ -412,26 +344,41 @@ def run_pendulum_experiments(results: dict, config: RunConfig, device: torch.dev
         with torch.no_grad():
             ode_pred_test[j] = rollout_euler_single(ode_func, x0, num_steps, dt).cpu().numpy()
 
-    theta_train_t = torch.tensor(true_states[idx_train, :, 0].reshape(-1, 1), dtype=torch.float32, device=device)
-    alpha_train_t = torch.tensor(alpha_fd[idx_train].reshape(-1, 1), dtype=torch.float32, device=device)
-    theta_val_t = torch.tensor(true_states[idx_val, :, 0].reshape(-1, 1), dtype=torch.float32, device=device)
-    alpha_val_t = torch.tensor(alpha_fd[idx_val].reshape(-1, 1), dtype=torch.float32, device=device)
+    # --- Structured LNN ---
+    theta_train_t = torch.tensor(
+        true_states[idx_train, :, 0].reshape(-1, 1), dtype=torch.float32, device=device,
+    )
+    alpha_train_t = torch.tensor(
+        alpha_fd[idx_train].reshape(-1, 1), dtype=torch.float32, device=device,
+    )
+    theta_val_t = torch.tensor(
+        true_states[idx_val, :, 0].reshape(-1, 1), dtype=torch.float32, device=device,
+    )
+    alpha_val_t = torch.tensor(
+        alpha_fd[idx_val].reshape(-1, 1), dtype=torch.float32, device=device,
+    )
 
     lnn = PotentialMLP(hidden=64, layers=3).to(device)
+    n_params_lnn = count_parameters(lnn)
+    print(f"\n  Training structured LNN ({n_params_lnn} params, {lnn_epochs} epochs)")
     opt_lnn = optim.Adam(lnn.parameters(), lr=1e-3)
 
     best_state = None
     best_val = float("inf")
     wait = 0
-    patience = 40 if config.quick else 80
+    patience = 40 if config.quick else 100
+    lnn_losses: list[float] = []
 
     start = time.time()
-    for _ in range(lnn_epochs):
+    for ep in range(lnn_epochs):
         opt_lnn.zero_grad()
         pred_alpha = predict_accel_lnn(lnn, theta_train_t, create_graph=True)
         loss = nn.functional.mse_loss(pred_alpha, alpha_train_t)
         loss.backward()
         opt_lnn.step()
+        lv = loss.item()
+        lnn_losses.append(lv)
+        _log_epoch(ep, lnn_epochs, lv)
 
         with torch.enable_grad():
             val_pred = predict_accel_lnn(lnn, theta_val_t, create_graph=False)
@@ -444,6 +391,7 @@ def run_pendulum_experiments(results: dict, config: RunConfig, device: torch.dev
         else:
             wait += 1
             if wait >= patience:
+                print(f"    early stop at epoch {ep+1}")
                 break
 
     if best_state is not None:
@@ -468,8 +416,16 @@ def run_pendulum_experiments(results: dict, config: RunConfig, device: torch.dev
             "omega_mae": mae(pred[:, :, 1], truth[:, :, 1]),
         }
 
+    # Energy conservation metric
+    rep = 0
+    E_true = pendulum_energy(true_test[rep, :, 0], true_test[rep, :, 1], g_over_l)
+    E_lnn = pendulum_energy(lnn_pred_test[rep, :, 0], lnn_pred_test[rep, :, 1], g_over_l)
+    E_ode = pendulum_energy(ode_pred_test[rep, :, 0], ode_pred_test[rep, :, 1], g_over_l)
+    energy_drift_lnn = float(np.std(E_lnn - E_true))
+    energy_drift_ode = float(np.std(E_ode - E_true))
+
     results["pendulum"] = {
-        "dt": dt,
+        "dt": round(dt, 6),
         "num_steps": num_steps,
         "num_trajectories": num_traj,
         "noise_std": noise_std,
@@ -479,87 +435,70 @@ def run_pendulum_experiments(results: dict, config: RunConfig, device: torch.dev
             "test": int(len(idx_test)),
         },
         "model_metrics": {
-            "baseline_mlp": {**two_state_metrics(base_pred_test, true_test), "train_seconds": base_seconds},
-            "neural_ode": {**two_state_metrics(ode_pred_test, true_test), "train_seconds": ode_seconds},
-            "structured_lnn": {**two_state_metrics(lnn_pred_test, true_test), "train_seconds": lnn_seconds},
+            "baseline_mlp": {
+                **two_state_metrics(base_pred_test, true_test),
+                "train_seconds": round(base_seconds, 2),
+                "param_count": n_params_base,
+            },
+            "neural_ode": {
+                **two_state_metrics(ode_pred_test, true_test),
+                "train_seconds": round(ode_seconds, 2),
+                "param_count": n_params_ode,
+                "energy_drift_std": round(energy_drift_ode, 6),
+            },
+            "structured_lnn": {
+                **two_state_metrics(lnn_pred_test, true_test),
+                "train_seconds": round(lnn_seconds, 2),
+                "param_count": n_params_lnn,
+                "energy_drift_std": round(energy_drift_lnn, 6),
+            },
         },
         "best_val_lnn_mse": best_val,
     }
 
+    print(f"\n  Baseline MLP  theta_rmse={results['pendulum']['model_metrics']['baseline_mlp']['theta_rmse']:.4f}")
+    print(f"  Neural ODE    theta_rmse={results['pendulum']['model_metrics']['neural_ode']['theta_rmse']:.4f}")
+    print(f"  Struct. LNN   theta_rmse={results['pendulum']['model_metrics']['structured_lnn']['theta_rmse']:.4f}")
+    print(f"  Energy drift  LNN={energy_drift_lnn:.6f}  NODE={energy_drift_ode:.6f}")
+
     if not config.save_plots:
         return
 
-    rep = 0
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    axes[0].plot(time_grid, true_test[rep, :, 0], "k--", linewidth=2.0, label="True")
-    axes[0].plot(time_grid, base_pred_test[rep, :, 0], label="Baseline")
-    axes[0].plot(time_grid, ode_pred_test[rep, :, 0], label="Neural ODE")
-    axes[0].plot(time_grid, lnn_pred_test[rep, :, 0], label="Structured LNN")
-    axes[0].set_xlabel("t")
-    axes[0].set_ylabel("theta")
-    axes[0].set_title("Pendulum trajectory")
-    axes[0].grid(True, alpha=0.25)
-    axes[0].legend()
-
-    axes[1].plot(true_test[rep, :, 0], true_test[rep, :, 1], "k--", linewidth=2.0, label="True")
-    axes[1].plot(base_pred_test[rep, :, 0], base_pred_test[rep, :, 1], label="Baseline")
-    axes[1].plot(ode_pred_test[rep, :, 0], ode_pred_test[rep, :, 1], label="Neural ODE")
-    axes[1].plot(lnn_pred_test[rep, :, 0], lnn_pred_test[rep, :, 1], label="Structured LNN")
-    axes[1].set_xlabel("theta")
-    axes[1].set_ylabel("omega")
-    axes[1].set_title("Pendulum phase portrait")
-    axes[1].grid(True, alpha=0.25)
-    axes[1].legend()
-    plt.tight_layout()
-    plt.savefig(FIG_DIR / "pendulum_model_comparison.png", dpi=180)
-    plt.close(fig)
+    loss_hists = {"Baseline MLP": base_losses, "Neural ODE": ode_losses, "Struct. LNN": lnn_losses}
+    plot_pendulum_model_comparison(time_grid, true_test, base_pred_test, ode_pred_test, lnn_pred_test, rep, FIG_DIR)
+    plot_pendulum_energy(time_grid, true_test, lnn_pred_test, ode_pred_test, g_over_l, rep, FIG_DIR)
+    plot_learned_potential(lnn, g_over_l, device, FIG_DIR)
+    plot_pendulum_loss_curves(loss_hists, FIG_DIR)
 
 
-def create_overall_bar_figure(results: dict, save_plots: bool) -> None:
-    if not save_plots:
-        return
-
-    labels = ["VDP Baseline", "VDP Neural ODE", "Pend Baseline", "Pend Neural ODE", "Pend LNN"]
-    values = [
-        results["vanderpol"]["model_metrics"]["baseline_mlp"]["z_rmse"],
-        results["vanderpol"]["model_metrics"]["neural_ode"]["z_rmse"],
-        results["pendulum"]["model_metrics"]["baseline_mlp"]["theta_rmse"],
-        results["pendulum"]["model_metrics"]["neural_ode"]["theta_rmse"],
-        results["pendulum"]["model_metrics"]["structured_lnn"]["theta_rmse"],
-    ]
-
-    plt.figure(figsize=(9, 4.5))
-    bars = plt.bar(labels, values, color=["#888888", "#4c78a8", "#888888", "#4c78a8", "#f58518"])
-    plt.ylabel("RMSE on primary state")
-    plt.title("Model comparison across systems")
-    plt.grid(True, axis="y", alpha=0.25)
-    plt.xticks(rotation=20, ha="right")
-    for bar, val in zip(bars, values):
-        plt.text(bar.get_x() + bar.get_width() / 2.0, val, f"{val:.3f}", ha="center", va="bottom", fontsize=9)
-    plt.tight_layout()
-    plt.savefig(FIG_DIR / "overall_rmse_bar.png", dpi=180)
-    plt.close()
-
+# -----------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run final project experiments")
-    parser.add_argument("--mode", choices=["quick", "full"], default="full", help="quick for fast sanity run")
-    parser.add_argument("--seed", type=int, default=395, help="random seed")
-    parser.add_argument("--device", choices=["cpu"], default="cpu", help="compute device")
-    parser.add_argument("--no-plots", action="store_true", help="skip figure generation")
+    parser.add_argument("--mode", choices=["quick", "full"], default="full")
+    parser.add_argument("--seed", type=int, default=395)
+    parser.add_argument("--device", choices=["cpu"], default="cpu")
+    parser.add_argument("--no-plots", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    config = RunConfig(mode=args.mode, seed=args.seed, device=args.device, save_plots=not args.no_plots)
+    config = RunConfig(
+        mode=args.mode,
+        seed=args.seed,
+        device=args.device,
+        save_plots=not args.no_plots,
+    )
 
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     set_seed(config.seed)
     device = torch.device(config.device)
 
-    print(f"Running experiments in {config.mode} mode...")
-    results = {
+    print(f"Mode: {config.mode}  |  Seed: {config.seed}  |  Device: {config.device}")
+    results: dict = {
         "seed": config.seed,
         "device": str(device),
         "mode": config.mode,
@@ -568,15 +507,19 @@ def main() -> None:
 
     run_vanderpol_experiments(results, config, device)
     run_pendulum_experiments(results, config, device)
-    create_overall_bar_figure(results, config.save_plots)
+
+    if config.save_plots:
+        plot_overall_bar(results, FIG_DIR)
 
     with open(RESULTS_PATH, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
-    print("\nAll experiments completed.")
-    print(f"Results JSON: {RESULTS_PATH}")
+    print("\n" + "=" * 60)
+    print("All experiments completed.")
+    print(f"  Results JSON : {RESULTS_PATH}")
     if config.save_plots:
-        print(f"Figures folder: {FIG_DIR}")
+        print(f"  Figures      : {FIG_DIR}")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
