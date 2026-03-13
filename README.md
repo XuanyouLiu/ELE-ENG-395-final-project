@@ -2,36 +2,41 @@
 
 ELE_ENG 395 final project comparing data-driven and physics-informed models on nonlinear ODE systems.
 
-## Current Scope
+## This repository includes
 
-- Systems: Van der Pol oscillator and simple pendulum
-- Models:
-  - Baseline MLP
-  - Neural ODE (shared residual vector field)
-  - Structured Lagrangian NN (pendulum)
-- Outputs:
-  - Figures in `code/figures/`
-  - Metrics JSON in `code/results_summary.json`
-  - 2-page report in `report/report.pdf`
+- **All code**: end-to-end experiment pipeline in `code/scripts/run_experiments.py`
+- **Math development**: derivations and equations in `docs/MATH_DEVELOPMENT.md`
+- **Explanations**: project plan and report narrative in `PROJECT_PLAN.md` and `report/report.tex`
+- **Clear structure**: separate `code/`, `docs/`, `report/`, and `scripts/`
+- **Reproducibility**: exact rerun instructions in `docs/REPRODUCIBILITY.md` and one-command script
 
-## Reproducibility
+## Quick start
 
 1. Install dependencies:
    `pip install -r code/requirements.txt`
-2. Run full experiment suite:
-   `python code/scripts/run_experiments.py --mode full`
-3. Fast sanity run:
+2. Reproduce everything (experiments + report PDF):
+   `bash scripts/reproduce_all.sh`
+3. Fast smoke test:
    `python code/scripts/run_experiments.py --mode quick --no-plots`
-4. Build report:
-   `cd report && pdflatex report.tex`
 
-## Repository Layout
+## Core outputs
+
+- `code/results_summary.json` (metrics)
+- `code/figures/*.png` (figures)
+- `report/report.pdf` (2-page final report)
+
+## Repository layout
 
 ```
 Final Project/
 ├── README.md
 ├── PROJECT_PLAN.md
 ├── finalProject.md
+├── docs/
+│   ├── MATH_DEVELOPMENT.md
+│   └── REPRODUCIBILITY.md
+├── scripts/
+│   └── reproduce_all.sh
 ├── code/
 │   ├── requirements.txt
 │   ├── results_summary.json

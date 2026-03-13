@@ -1,20 +1,13 @@
 # Experiment Code
 
-This folder contains the full experiment runner used in the report.
+Primary entry point: `scripts/run_experiments.py`
 
-## Entry point
+## Modes
 
-- `scripts/run_experiments.py`
+- `--mode full`: report-grade training budget
+- `--mode quick`: reduced training for validation
 
-## CLI options
-
-- `--mode full|quick`:
-  - `full` reproduces report-grade results
-  - `quick` runs reduced epochs/trajectories for fast validation
-- `--seed <int>`: set random seed (default `395`)
-- `--no-plots`: skip figure generation
-
-## Typical commands
+## Commands
 
 From project root:
 
@@ -25,10 +18,9 @@ python code/scripts/run_experiments.py --mode quick --no-plots
 
 ## Outputs
 
-- `code/results_summary.json`: machine-readable metrics
-- `code/figures/*.png`: generated plots
+- `code/results_summary.json`
+- `code/figures/*.png`
 
-## Notes
+## Reproducibility
 
-- Script is CPU-only by design for portability.
-- Results are deterministic for a fixed seed.
+Use `bash scripts/reproduce_all.sh` to regenerate experiments and report in one command.
